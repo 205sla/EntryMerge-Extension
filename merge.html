@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EntryMerge - 엔트리 작품 합치기</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div class="container">
+  <h1>EntryMerge</h1>
+  <p class="subtitle">엔트리 작품(.ent) 파일을 합쳐보세요</p>
+  <p class="limit-info">파일당 최대 50MB · 전체 최대 150MB · 최대 10개</p>
+
+  <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label=".ent 파일 선택">
+    <div class="icon">📂</div>
+    <p>.ent 파일을 여기에 드래그하거나 클릭하여 선택</p>
+  </div>
+  <input type="file" id="fileInput" multiple accept=".ent" aria-hidden="true">
+
+  <ul class="file-list" id="fileList"></ul>
+  <div class="total-size" id="totalSize"></div>
+
+  <button id="mergeBtn" disabled>작품 합치기</button>
+  <button class="extra-toggle" id="extraToggle" type="button">기타 설정</button>
+  <div class="extra-settings" id="extraSettings">
+    <label><input type="checkbox" id="clearRemake"> 리메이크 표시 지우기</label>
+    <label><input type="checkbox" id="hideTimerAnswer"> 대답, 초시계 숨기기</label>
+  </div>
+  <div class="status" id="status"></div>
+
+  <div class="footer">
+    문의: <a href="mailto:205@205.kr">205@205.kr</a> · <a href="https://github.com/205sla/EntryMergeServer" target="_blank" rel="noopener">GitHub</a>
+  </div>
+  <div class="version-badge">Chrome Extension v1.0.0</div>
+</div>
+
+<!-- Progress overlay -->
+<div class="progress-overlay" id="progressOverlay">
+  <div class="progress-box">
+    <div class="progress-icon">⚙️</div>
+    <p class="progress-msg" id="progressMsg">작품을 합치는 중...</p>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar-fill" id="progressBar"></div>
+    </div>
+    <div class="progress-pct" id="progressPct">0%</div>
+    <button class="progress-close" id="progressClose">닫기</button>
+  </div>
+</div>
+
+<script src="js/pako.min.js"></script>
+<script src="js/tar.js"></script>
+<script src="js/merge-engine.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

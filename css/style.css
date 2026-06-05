@@ -253,6 +253,61 @@ input[type="file"] { display: none; }
   transform: translateY(-1px);
 }
 
+/* 도구.엔트리.org 패밀리 링크
+   ent2 프로젝트의 components/ToolsFamilyLink.tsx 를 이 스택에 맞게 이식.
+   원본 수정 시 ent2 쪽을 먼저 고쳐서 모든 서비스가 싱크되도록 할 것. */
+.tools-family-wrap {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
+}
+.tools-family-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  border-radius: 9999px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #475569;
+  font-size: 0.875rem;
+  text-decoration: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  transition: border-color 0.2s, background-color 0.2s, color 0.2s;
+}
+.tools-family-link:hover {
+  border-color: #22c55e;
+  background: #eef9f2;
+  color: #15803d;
+}
+.tools-family-link .tfl-divider {
+  display: inline-block;
+  width: 1px;
+  height: 12px;
+  background: #e2e8f0;
+  transition: background-color 0.2s;
+}
+.tools-family-link:hover .tfl-divider {
+  background: rgba(34, 197, 94, 0.4);
+}
+.tools-family-link .tfl-brand {
+  font-weight: 600;
+  color: #16a34a;
+  transition: color 0.2s;
+}
+.tools-family-link:hover .tfl-brand {
+  color: #15803d;
+}
+.tools-family-link .tfl-arrow {
+  display: inline-block;
+  color: #16a34a;
+  transition: transform 0.2s, color 0.2s;
+}
+.tools-family-link:hover .tfl-arrow {
+  color: #15803d;
+  transform: translateX(2px);
+}
+
 /* Footer */
 .footer {
   margin-top: 16px;

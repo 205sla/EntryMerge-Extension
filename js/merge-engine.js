@@ -1,167 +1,33 @@
 /**
- * merge-engine.js - Core merge logic for EntryMerge.
- * Ports the server-side Python merge algorithm to client-side JavaScript.
+ * merge-engine.js - .ent 입출력 + 병합 오케스트레이션.
+ *
+ * 병합 알고리즘 자체는 merge-core.js(MergeCore)에 있다.
+ * 이 파일은 gzip/TAR 해체·조립과 진행률 보고만 담당한다.
  */
 const MergeEngine = (() => {
   'use strict';
 
-  const ID_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  const SPECIAL_VAR_TYPES = new Set(['timer', 'answer']);
   const textDecoder = new TextDecoder();
+  const textEncoder = new TextEncoder();
 
-  // --- Deep comparison (Python's `in` operator does deep equality on lists) ---
-
-  function deepEqual(a, b) {
-    if (a === b) return true;
-    if (a == null || b == null || typeof a !== typeof b) return false;
-
-    if (Array.isArray(a)) {
-      if (!Array.isArray(b) || a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i++) {
-        if (!deepEqual(a[i], b[i])) return false;
-      }
-      return true;
-    }
-
-    if (typeof a === 'object') {
-      const keysA = Object.keys(a);
-      if (keysA.length !== Object.keys(b).length) return false;
-      for (const k of keysA) {
-        if (!Object.prototype.hasOwnProperty.call(b, k) || !deepEqual(a[k], b[k])) return false;
-      }
-      return true;
-    }
-
-    return false;
-  }
-
-  function deepIncludes(arr, item) {
-    return arr.some(el => deepEqual(el, item));
-  }
-
-  function isPlainObject(v) {
-    return v !== null && typeof v === 'object' && !Array.isArray(v);
-  }
-
-  // Yield control to the browser render loop (prevents UI freeze on heavy operations)
+  // 브라우저 렌더 루프에 제어권을 넘긴다(무거운 동기 작업 사이의 프리즈 방지).
   function yieldToUI() {
     return new Promise(resolve => setTimeout(resolve, 0));
   }
 
-  // --- Recursive dict merge ---
+  // --- .ent 해체 ----------------------------------------------------------
 
-  function mergeDicts(target, source) {
-    for (const [key, value] of Object.entries(source)) {
-      if (!(key in target)) {
-        target[key] = value;
-        continue;
-      }
-
-      const existing = target[key];
-
-      if (isPlainObject(existing) && isPlainObject(value)) {
-        mergeDicts(existing, value);
-      } else if (Array.isArray(existing) && Array.isArray(value)) {
-        for (const item of value) {
-          if (!deepIncludes(existing, item)) existing.push(item);
-        }
-      } else if (!deepEqual(existing, value)) {
-        const list = Array.isArray(existing) ? existing : (target[key] = [existing]);
-        if (!deepIncludes(list, value)) list.push(value);
-      }
-    }
+  function isSafeMemberPath(name) {
+    const normalized = String(name).replace(/\\/g, '/');
+    if (normalized.startsWith('/')) return false;
+    const parts = normalized.split('/').filter(p => p && p !== '.');
+    if (!parts.length) return false;
+    if (parts.some(p => p === '..')) return false;
+    // 드라이브 문자(C:) 같은 절대 경로 표기도 거부한다.
+    return !parts[0].includes(':');
   }
-
-  // --- Scene ID randomization ---
-
-  function generateId(len, usedIds) {
-    let id;
-    do {
-      id = '';
-      for (let i = 0; i < len; i++) {
-        id += ID_CHARS[Math.floor(Math.random() * ID_CHARS.length)];
-      }
-    } while (usedIds.has(id));
-    return id;
-  }
-
-  function processSingleProject(project, globalUsedIds) {
-    if (!Array.isArray(project.scenes)) return project;
-
-    const mapping = {};
-
-    for (const scene of project.scenes) {
-      const oldId = scene.id;
-      if (!oldId) continue;
-      const newId = generateId(4, globalUsedIds);
-      globalUsedIds.add(newId);
-      mapping[oldId] = newId;
-      scene.id = newId;
-    }
-
-    if (project.objects) {
-      const update = (obj) => {
-        if (obj.scene && mapping[obj.scene]) {
-          obj.scene = mapping[obj.scene];
-        }
-        if (typeof obj.script === 'string') {
-          for (const [oldId, newId] of Object.entries(mapping)) {
-            obj.script = obj.script.replaceAll(oldId, newId);
-          }
-        }
-      };
-
-      const objs = project.objects;
-      const items = Array.isArray(objs) ? objs : Object.values(objs);
-      for (const obj of items) {
-        if (obj && typeof obj === 'object') update(obj);
-      }
-    }
-
-    return project;
-  }
-
-  // --- Post-merge processing ---
-
-  function dedupSpecialVariables(merged) {
-    if (!Array.isArray(merged.variables)) return;
-    const seen = new Set();
-    merged.variables = merged.variables.filter(v => {
-      if (v && typeof v === 'object' && SPECIAL_VAR_TYPES.has(v.variableType)) {
-        if (seen.has(v.variableType)) return false;
-        seen.add(v.variableType);
-      }
-      return true;
-    });
-  }
-
-  function hideTimerAnswerVariables(merged) {
-    if (!Array.isArray(merged.variables)) return;
-    for (const v of merged.variables) {
-      if (v && typeof v === 'object' && SPECIAL_VAR_TYPES.has(v.variableType)) {
-        v.x = 2050;
-        v.y = 2050;
-      }
-    }
-  }
-
-  function applyMetadata(merged, clearRemake) {
-    merged.name = '머지';
-    if (clearRemake) {
-      merged.parent = '';
-      merged.origin = '';
-      merged.user = '';
-    } else {
-      merged.parent = '678b8711133715065e4548c7';
-      merged.origin = '678b8711133715065e4548c7';
-      merged.user = '56136825dadc91e1235b460d';
-    }
-  }
-
-  // --- .ent file extraction ---
 
   function parseEntFile(fileName, arrayBuffer) {
-    // Decompress GZIP -> TAR
     let tarData;
     try {
       tarData = pako.inflate(new Uint8Array(arrayBuffer));
@@ -174,7 +40,8 @@ const MergeEngine = (() => {
     const resources = [];
 
     for (const entry of entries) {
-      if (entry.name.includes('..')) continue;
+      if (entry.type === '5' || entry.name.endsWith('/')) continue;
+      if (!isSafeMemberPath(entry.name)) continue;
 
       const basename = entry.name.split('/').pop();
       if (basename === 'project.json') {
@@ -183,7 +50,9 @@ const MergeEngine = (() => {
         } catch (_) {
           throw new Error(`'${fileName}'의 project.json 파싱에 실패했습니다.`);
         }
-      } else if (entry.data.length > 0) {
+        continue;
+      }
+      if (entry.data.length > 0) {
         resources.push({ name: entry.name, data: entry.data });
       }
     }
@@ -195,33 +64,18 @@ const MergeEngine = (() => {
     return { projectData, resources };
   }
 
-  // --- TAR output builder ---
+  // --- .ent 조립 ----------------------------------------------------------
 
-  function buildOutputTar(mergedProject, allResources) {
-    const projectJsonBytes = new TextEncoder().encode(
+  function buildOutputTar(mergedProject, resolvedResources) {
+    const projectJsonBytes = textEncoder.encode(
       JSON.stringify(mergedProject, null, 4)
     );
 
-    // Build entries with directory structure (matches Python's tar.add(arcname="temp"))
-    const tarEntries = [{ name: 'temp/', data: new Uint8Array(0) }];
-    const dirs = new Set(['temp/']);
-
-    // Add merged project.json
-    allResources.set('temp/project.json', projectJsonBytes);
-
-    for (const [path, data] of allResources) {
-      if (!path.startsWith('temp/')) continue;
-
-      // Auto-create intermediate directory entries
-      const segments = path.split('/');
-      for (let d = 2; d < segments.length; d++) {
-        const dir = segments.slice(0, d).join('/') + '/';
-        if (!dirs.has(dir)) {
-          tarEntries.push({ name: dir, data: new Uint8Array(0) });
-          dirs.add(dir);
-        }
-      }
-
+    // 사이트판(파이썬)과 같은 구성: temp/project.json + 리소스.
+    // 디렉터리 항목은 넣지 않는다(EntryJS는 파일 항목만 읽는다).
+    const tarEntries = [{ name: 'temp/project.json', data: projectJsonBytes }];
+    for (const [path, data] of resolvedResources) {
+      if (path === 'temp/project.json') continue;
       tarEntries.push({ name: path, data });
     }
 
@@ -229,57 +83,84 @@ const MergeEngine = (() => {
     return pako.gzip(tarBytes, { level: 6 });
   }
 
-  // --- Main orchestration ---
+  // --- 메인 -------------------------------------------------------------
 
   async function performMerge(files, options, onProgress) {
-    const globalUsedIds = new Set();
-    const allResources = new Map();
-    let mergedProject = null;
+    const report = typeof onProgress === 'function' ? onProgress : () => {};
+    const opts = options || {};
+
+    if (!files || files.length < 2) {
+      throw new Error('최소 2개 이상의 .ent 파일이 필요합니다.');
+    }
+
+    const allocator = new MergeCore.IdAllocator();
+    const projects = [];
+    const filesResources = [];
+    let baselineBroken = 0;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      onProgress(Math.round((i / files.length) * 80), `처리 중: ${file.name} (${i + 1}/${files.length})`);
+      report(
+        Math.round((i / files.length) * 70),
+        `처리 중: ${file.name} (${i + 1}/${files.length})`
+      );
 
       const arrayBuffer = await file.arrayBuffer();
-
-      // Yield to UI before heavy synchronous work
       await yieldToUI();
 
       const { projectData, resources } = parseEntFile(file.name, arrayBuffer);
 
-      for (const r of resources) {
-        allResources.set(r.name, r.data);
-      }
+      // 입력이 이미 갖고 있던 끊어진 참조 수를 기록한다(검증 기준선).
+      baselineBroken += MergeCore.countBrokenRefs(projectData);
 
-      processSingleProject(projectData, globalUsedIds);
+      // 파일마다 독립적인 ID namespace로 전 식별자를 재발급한다.
+      projects.push(MergeCore.prepareProject(projectData, allocator));
+      filesResources.push(resources);
 
-      if (mergedProject === null) {
-        mergedProject = projectData;
-      } else {
-        mergeDicts(mergedProject, projectData);
-      }
-
-      // Yield after each file to keep UI responsive
       await yieldToUI();
     }
 
-    if (!mergedProject) {
-      throw new Error('유효한 project.json 데이터를 찾을 수 없습니다.');
-    }
-
-    onProgress(85, '후처리 중...');
-    dedupSpecialVariables(mergedProject);
-    if (options.hideTimerAnswer) hideTimerAnswerVariables(mergedProject);
-    applyMetadata(mergedProject, options.clearRemake);
-
-    onProgress(90, '파일 생성 중...');
+    report(75, '리소스 정리 중...');
     await yieldToUI();
 
-    const gzBytes = buildOutputTar(mergedProject, allResources);
+    // 리소스 경로 충돌 해소 후, 바뀐 경로를 참조에 반영한다.
+    const { resolved, renames } = MergeCore.resolveResources(filesResources);
+    MergeCore.applyResourceRenames(projects, renames);
 
-    onProgress(100, '완료!');
+    report(80, '병합 중...');
+    await yieldToUI();
+
+    let merged = MergeCore.mergeProjects(projects);
+    merged = MergeCore.unifySpecialVariables(merged);
+
+    report(85, '후처리 중...');
+    if (opts.hideTimerAnswer) merged = MergeCore.hideTimerAnswerVariables(merged);
+    merged = MergeCore.applyMetadata(merged, !!opts.clearRemake);
+
+    report(90, '검증 중...');
+    await yieldToUI();
+
+    // 출력 검증: 중복 ID나 새로 끊어진 참조가 있으면 깨진 파일을 내보내지 않는다.
+    const problems = MergeCore.validateMerged(merged, resolved.keys(), baselineBroken);
+    if (problems.length) {
+      console.error('Merge validation failed:', problems.slice(0, 20));
+      throw new Error(
+        '병합 결과 검증에 실패했습니다. 문제: ' + problems.slice(0, 5).join(' / ')
+      );
+    }
+
+    report(95, '파일 생성 중...');
+    await yieldToUI();
+
+    const gzBytes = buildOutputTar(merged, resolved);
+
+    report(100, '완료!');
     return new Blob([gzBytes], { type: 'application/gzip' });
   }
 
   return { performMerge };
 })();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = MergeEngine;
+}

@@ -20,6 +20,7 @@
     hideTimerAnswer: $('hideTimerAnswer'),
     overlay: $('progressOverlay'),
     progressMsg: $('progressMsg'),
+    progressBarTrack: $('progressBarTrack'),
     progressBar: $('progressBar'),
     progressPct: $('progressPct'),
     progressClose: $('progressClose'),
@@ -27,6 +28,7 @@
 
   let files = [];
   let dragCounter = 0; // Tracks nested dragenter/dragleave events
+  let focusBeforeProgress = null;
 
   // --- Settings toggle ---
   dom.extraToggle.addEventListener('click', () => {
@@ -141,16 +143,21 @@
 
   // --- Progress overlay ---
   function showProgress() {
+    focusBeforeProgress = document.activeElement;
     dom.progressMsg.textContent = '작품을 합치는 중...';
     dom.progressBar.style.width = '0%';
+    dom.progressBarTrack.setAttribute('aria-valuenow', '0');
     dom.progressPct.textContent = '0%';
     dom.progressClose.style.display = 'none';
+    dom.overlay.setAttribute('aria-hidden', 'false');
     dom.overlay.classList.add('show');
   }
 
   function updateProgress(pct, msg) {
-    dom.progressBar.style.width = pct + '%';
-    dom.progressPct.textContent = pct + '%';
+    const normalized = Math.max(0, Math.min(100, Number(pct) || 0));
+    dom.progressBar.style.width = normalized + '%';
+    dom.progressBarTrack.setAttribute('aria-valuenow', String(normalized));
+    dom.progressPct.textContent = normalized + '%';
     if (msg) dom.progressMsg.textContent = msg;
   }
 
@@ -159,12 +166,22 @@
     if (success) {
       dom.progressMsg.textContent = '합치기 완료!';
       dom.progressBar.style.width = '100%';
+      dom.progressBarTrack.setAttribute('aria-valuenow', '100');
       dom.progressPct.textContent = '100%';
     }
+    dom.progressClose.focus();
   }
 
   dom.progressClose.addEventListener('click', () => {
     dom.overlay.classList.remove('show');
+    dom.overlay.setAttribute('aria-hidden', 'true');
+    const focusTarget = focusBeforeProgress && focusBeforeProgress !== document.body
+      ? focusBeforeProgress
+      : dom.mergeBtn;
+    if (focusTarget && typeof focusTarget.focus === 'function') {
+      focusTarget.focus();
+    }
+    focusBeforeProgress = null;
   });
 
   // --- Merge ---

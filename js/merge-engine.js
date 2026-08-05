@@ -95,6 +95,7 @@ const MergeEngine = (() => {
 
     const allocator = new MergeCore.IdAllocator();
     const projects = [];
+    const remakeMetadata = [];
     const filesResources = [];
     let baselineBroken = 0;
 
@@ -112,6 +113,9 @@ const MergeEngine = (() => {
 
       // 입력이 이미 갖고 있던 끊어진 참조 수를 기록한다(검증 기준선).
       baselineBroken += MergeCore.countBrokenRefs(projectData);
+
+      // ID 재발급 전에 선택 가능한 원본 작품의 출처 메타데이터를 보관한다.
+      remakeMetadata.push(MergeCore.extractRemakeMetadata(projectData));
 
       // 파일마다 독립적인 ID namespace로 전 식별자를 재발급한다.
       projects.push(MergeCore.prepareProject(projectData, allocator));
@@ -135,7 +139,18 @@ const MergeEngine = (() => {
 
     report(85, '후처리 중...');
     if (opts.hideTimerAnswer) merged = MergeCore.hideTimerAnswerVariables(merged);
-    merged = MergeCore.applyMetadata(merged, !!opts.clearRemake);
+    const remakeMode = typeof opts.remakeMode === 'string'
+      ? opts.remakeMode
+      : (opts.clearRemake ? 'hidden' : 'default');
+    let sourceMetadata = null;
+    if (remakeMode === 'source') {
+      const sourceIndex = opts.remakeSourceIndex;
+      if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= files.length) {
+        throw new Error('원본 정보를 유지할 작품을 선택해주세요.');
+      }
+      sourceMetadata = remakeMetadata[sourceIndex];
+    }
+    merged = MergeCore.applyMetadata(merged, remakeMode, sourceMetadata);
 
     report(90, '검증 중...');
     await yieldToUI();

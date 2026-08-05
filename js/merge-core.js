@@ -94,6 +94,18 @@ const MergeCore = (() => {
   // 작품 전체에 하나만 존재해야 하는 특수 변수.
   const SPECIAL_VARIABLE_TYPES = new Set(['timer', 'answer', 'stt']);
 
+  const REMAKE_MODE_DEFAULT = 'default';
+  const REMAKE_MODE_HIDDEN = 'hidden';
+  const REMAKE_MODE_SOURCE = 'source';
+  const REMAKE_MODES = new Set([
+    REMAKE_MODE_DEFAULT, REMAKE_MODE_HIDDEN, REMAKE_MODE_SOURCE,
+  ]);
+  const DEFAULT_REMAKE_METADATA = Object.freeze({
+    parent: '678b8711133715065e4548c7',
+    origin: '678b8711133715065e4548c7',
+    user: '56136825dadc91e1235b460d',
+  });
+
   // 값이 충돌해도 배열로 만들면 안 되는 스칼라 필드. 첫 파일 값을 채택한다.
   // speed가 배열이 되면 Entry.FPS가 배열이 되어 1000/[60,60] = NaN 으로 틱이 붕괴한다.
   const SCALAR_FIELDS = [
@@ -502,17 +514,37 @@ const MergeCore = (() => {
     return merged;
   }
 
-  function applyMetadata(merged, clearRemake) {
-    merged.name = '머지';
-    if (clearRemake) {
-      merged.parent = '';
-      merged.origin = '';
-      merged.user = '';
-    } else {
-      merged.parent = '678b8711133715065e4548c7';
-      merged.origin = '678b8711133715065e4548c7';
-      merged.user = '56136825dadc91e1235b460d';
+  function extractRemakeMetadata(project) {
+    const source = project && typeof project === 'object' ? project : {};
+    return {
+      parent: typeof source.parent === 'string' ? source.parent : '',
+      origin: typeof source.origin === 'string' ? source.origin : '',
+      user: typeof source.user === 'string' ? source.user : '',
+    };
+  }
+
+  function applyMetadata(merged, modeOrClearRemake, sourceMetadata) {
+    // boolean 인수는 기존 clearRemake 호출자 하위 호환용이다.
+    const mode = typeof modeOrClearRemake === 'string'
+      ? modeOrClearRemake
+      : (modeOrClearRemake ? REMAKE_MODE_HIDDEN : REMAKE_MODE_DEFAULT);
+    if (!REMAKE_MODES.has(mode)) {
+      throw new MergeError('리메이크 출처 설정이 올바르지 않습니다.');
     }
+
+    merged.name = '머지';
+    let metadata;
+    if (mode === REMAKE_MODE_DEFAULT) {
+      metadata = DEFAULT_REMAKE_METADATA;
+    } else if (mode === REMAKE_MODE_HIDDEN) {
+      metadata = { parent: '', origin: '', user: '' };
+    } else {
+      metadata = extractRemakeMetadata(sourceMetadata);
+      if (!metadata.parent && !metadata.origin) {
+        throw new MergeError('선택한 작품에는 유지할 원본 작품 정보가 없습니다.');
+      }
+    }
+    Object.assign(merged, metadata);
     return merged;
   }
 
@@ -827,13 +859,21 @@ const MergeCore = (() => {
     mergeProjects,
     unifySpecialVariables,
     hideTimerAnswerVariables,
+    extractRemakeMetadata,
     applyMetadata,
     resolveResources,
     applyResourceRenames,
     validateMerged,
     countBrokenRefs,
     // 테스트용 내부 노출
-    _internal: { rewriteScript, refNamespace, SENTINEL_VALUES, hashBytes },
+    _internal: {
+      rewriteScript,
+      refNamespace,
+      SENTINEL_VALUES,
+      hashBytes,
+      REMAKE_MODES,
+      DEFAULT_REMAKE_METADATA,
+    },
   };
 })();
 

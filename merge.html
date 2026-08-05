@@ -23,9 +23,21 @@
   <div class="total-size" id="totalSize"></div>
 
   <button id="mergeBtn" disabled>작품 합치기</button>
-  <button class="extra-toggle" id="extraToggle" type="button">기타 설정</button>
+  <button class="extra-toggle" id="extraToggle" type="button" aria-expanded="false" aria-controls="extraSettings">기타 설정</button>
   <div class="extra-settings" id="extraSettings">
-    <label><input type="checkbox" id="clearRemake"> 리메이크 표시 지우기</label>
+    <fieldset class="remake-settings">
+      <legend>리메이크 출처</legend>
+      <label><input type="radio" name="remakeMode" value="default" checked> 기존 기본 작품으로 표시</label>
+      <label><input type="radio" name="remakeMode" value="hidden"> 리메이크 표시 숨기기</label>
+      <label><input type="radio" name="remakeMode" value="source"> 합친 작품 중에서 선택</label>
+      <div class="remake-source-control">
+        <label for="remakeSource">정보를 가져올 작품</label>
+        <select id="remakeSource" disabled aria-describedby="remakeSourceHelp">
+          <option value="">먼저 작품 파일을 추가해주세요</option>
+        </select>
+        <p class="setting-help" id="remakeSourceHelp">선택한 작품의 parent, origin, user 값을 유지합니다.</p>
+      </div>
+    </fieldset>
     <label><input type="checkbox" id="hideTimerAnswer"> 대답, 초시계 숨기기</label>
   </div>
   <div class="status" id="status"></div>
@@ -48,7 +60,7 @@
   <div class="footer">
     문의: <a href="mailto:205@205.kr">205@205.kr</a> · <a href="https://github.com/205sla/EntryMergeServer" target="_blank" rel="noopener">GitHub</a>
   </div>
-  <div class="version-badge">Chrome Extension v1.1.0</div>
+  <div class="version-badge">Chrome Extension v1.2.0</div>
 </div>
 
 <!-- Progress overlay -->

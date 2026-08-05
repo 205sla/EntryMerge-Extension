@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "EntryMerge - 엔트리 작품 합치기",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "엔트리(Entry) 작품 파일(.ent)을 합쳐주는 도구",
   "action": {
     "default_title": "EntryMerge",

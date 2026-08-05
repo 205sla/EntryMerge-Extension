@@ -16,7 +16,8 @@
     totalSize: $('totalSize'),
     extraToggle: $('extraToggle'),
     extraSettings: $('extraSettings'),
-    clearRemake: $('clearRemake'),
+    remakeModeInputs: [...document.querySelectorAll('input[name="remakeMode"]')],
+    remakeSource: $('remakeSource'),
     hideTimerAnswer: $('hideTimerAnswer'),
     overlay: $('progressOverlay'),
     progressMsg: $('progressMsg'),
@@ -27,12 +28,43 @@
   };
 
   let files = [];
+  let remakeSourceFile = null;
   let dragCounter = 0; // Tracks nested dragenter/dragleave events
   let focusBeforeProgress = null;
 
   // --- Settings toggle ---
   dom.extraToggle.addEventListener('click', () => {
-    dom.extraSettings.classList.toggle('show');
+    const isOpen = dom.extraSettings.classList.toggle('show');
+    dom.extraToggle.setAttribute('aria-expanded', String(isOpen));
+  });
+
+  function selectedRemakeMode() {
+    return dom.remakeModeInputs.find(input => input.checked)?.value || 'default';
+  }
+
+  function syncRemakeSource() {
+    if (!files.includes(remakeSourceFile)) remakeSourceFile = files[0] || null;
+    dom.remakeSource.innerHTML = '';
+    if (files.length === 0) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = '먼저 작품 파일을 추가해주세요';
+      dom.remakeSource.appendChild(option);
+    } else {
+      files.forEach((file, index) => {
+        const option = document.createElement('option');
+        option.value = String(index);
+        option.textContent = `${index + 1}. ${file.name}`;
+        option.selected = file === remakeSourceFile;
+        dom.remakeSource.appendChild(option);
+      });
+    }
+    dom.remakeSource.disabled = selectedRemakeMode() !== 'source' || files.length === 0;
+  }
+
+  dom.remakeModeInputs.forEach(input => input.addEventListener('change', syncRemakeSource));
+  dom.remakeSource.addEventListener('change', () => {
+    remakeSourceFile = files[Number(dom.remakeSource.value)] || null;
   });
 
   // --- Drag & drop (with nested element handling) ---
@@ -133,6 +165,7 @@
     } else if (totalOver) {
       setStatus('전체 용량이 150MB를 초과합니다.', 'error');
     }
+    syncRemakeSource();
   }
 
   // --- Status message ---
@@ -188,6 +221,13 @@
   dom.mergeBtn.addEventListener('click', async () => {
     if (files.length < 2) return;
 
+    const remakeMode = selectedRemakeMode();
+    const remakeSourceIndex = files.indexOf(remakeSourceFile);
+    if (remakeMode === 'source' && remakeSourceIndex < 0) {
+      setStatus('원본 정보를 유지할 작품을 선택해주세요.', 'error');
+      return;
+    }
+
     dom.mergeBtn.disabled = true;
     dom.mergeBtn.textContent = '합치는 중...';
     setStatus('로컬에서 처리 중입니다...', 'loading');
@@ -197,7 +237,8 @@
       const blob = await MergeEngine.performMerge(
         [...files],
         {
-          clearRemake: dom.clearRemake.checked,
+          remakeMode,
+          remakeSourceIndex,
           hideTimerAnswer: dom.hideTimerAnswer.checked
         },
         updateProgress

@@ -155,6 +155,17 @@ input[type="file"] { display: none; }
   text-align: left;
 }
 .extra-settings.show { display: block; }
+.remake-settings {
+  border: 0;
+  padding: 0;
+  margin: 0 0 10px;
+}
+.remake-settings legend {
+  margin-bottom: 5px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
 .extra-settings label {
   font-size: 0.82rem;
   color: var(--text-sub);
@@ -162,9 +173,35 @@ input[type="file"] { display: none; }
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-bottom: 4px;
 }
-.extra-settings input[type="checkbox"] {
+.extra-settings input[type="checkbox"],
+.extra-settings input[type="radio"] {
   accent-color: var(--entry-purple);
+}
+.remake-source-control {
+  margin: 5px 0 8px 22px;
+}
+.remake-source-control label {
+  display: block;
+  margin-bottom: 4px;
+}
+.remake-source-control select {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid #d8d8e0;
+  border-radius: 6px;
+  color: var(--text-main);
+  background: #fff;
+}
+.remake-source-control select:disabled {
+  color: #999;
+  background: #eee;
+}
+.setting-help {
+  margin: 4px 0 0;
+  font-size: 0.72rem;
+  color: #888;
 }
 
 .status {

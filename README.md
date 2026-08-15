@@ -35,6 +35,15 @@
 ## 제한
 - 파일당 최대 50MB / 전체 150MB / 최대 10개
 
+## 회귀 테스트
+
+```bash
+node --test
+```
+
+현재 표·checker 블록 참조, 참조 기준선, 리소스 `thumbUrl`, ID 발급 상한과
+Gzip/TAR 경로·항목 안전 정책을 검사한다.
+
 ## 관련 링크
 - 웹 버전: https://entry.205.kr
 - 서버 코드: https://github.com/205sla/EntryMergeServer

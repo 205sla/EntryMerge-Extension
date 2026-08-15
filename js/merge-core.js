@@ -12,6 +12,9 @@ const MergeCore = (() => {
 
   const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
   const ID_LEN = 4;
+  const ID_SPACE_SIZE = ID_CHARS.length ** ID_LEN;
+  const DEFAULT_MAX_GENERATED_IDS = 100000;
+  const MAX_ID_GENERATION_ATTEMPTS = 1024;
 
   // --- ID namespace -------------------------------------------------------
   // 같은 문자열이 서로 다른 namespace의 ID로 쓰일 수 있다(실측: 'result'가
@@ -77,6 +80,20 @@ const MergeCore = (() => {
     'locate_object_time',
   ]);
 
+  // checker 실행 블록은 Entry.container.getObject(params[0])으로 대상을 찾는다.
+  reg(NS.OBJECT, 0, [
+    'check_object_property', 'check_block_execution', 'switch_scope',
+  ]);
+
+  // EntryJS block_analysis.js의 표 블록은 MATRIX p0에 table ID를 저장한다.
+  reg(NS.TABLE, 0, [
+    'append_row_to_table', 'insert_row_to_table', 'delete_row_from_table',
+    'set_value_from_table', 'save_current_table', 'get_table_count',
+    'get_value_from_table', 'get_value_from_last_row', 'calc_values_from_table',
+    'open_table', 'open_table_wait', 'open_table_chart', 'get_coefficient',
+    'set_value_from_cell', 'get_value_from_cell', 'get_value_v_lookup',
+  ]);
+
   function refNamespace(blockType, index) {
     if (typeof blockType !== 'string') return undefined;
     return BLOCK_PARAM_REFS.get(paramKey(blockType, index));
@@ -138,8 +155,15 @@ const MergeCore = (() => {
    * 새 ID pool은 요청 전체에서 공유해 유일성을 보장한다.
    */
   class IdAllocator {
-    constructor() {
+    constructor(options = {}) {
+      const maxIds = options.maxIds === undefined
+        ? DEFAULT_MAX_GENERATED_IDS
+        : options.maxIds;
+      if (!Number.isInteger(maxIds) || maxIds <= 0 || maxIds > ID_SPACE_SIZE) {
+        throw new TypeError('maxIds는 4자리 ID 공간 안의 양의 정수여야 합니다.');
+      }
       this._used = new Set();
+      this._maxIds = maxIds;
       this._files = [];
       this.maps = this._emptyMaps();
     }
@@ -157,19 +181,32 @@ const MergeCore = (() => {
     }
 
     fresh() {
-      let id;
-      do {
-        id = '';
+      this._ensureCapacity();
+      for (let attempt = 0; attempt < MAX_ID_GENERATION_ATTEMPTS; attempt++) {
+        let id = '';
         for (let i = 0; i < ID_LEN; i++) {
           id += ID_CHARS[Math.floor(Math.random() * ID_CHARS.length)];
         }
-      } while (this._used.has(id));
-      this._used.add(id);
-      return id;
+        if (!this._used.has(id)) {
+          this._used.add(id);
+          return id;
+        }
+      }
+      throw new MergeError('새 식별자를 안전하게 발급할 수 없어 병합을 중단했습니다.');
     }
 
     reserve(value) {
-      if (value) this._used.add(String(value));
+      if (!value) return;
+      const key = String(value);
+      if (this._used.has(key)) return;
+      this._ensureCapacity();
+      this._used.add(key);
+    }
+
+    _ensureCapacity() {
+      if (this._used.size >= this._maxIds) {
+        throw new MergeError('작품에 식별자가 너무 많아 병합할 수 없습니다.');
+      }
     }
 
     remap(namespace, oldId) {
@@ -187,6 +224,31 @@ const MergeCore = (() => {
     lookup(namespace, oldId) {
       if (oldId === null || oldId === undefined) return null;
       return this.maps[namespace].get(String(oldId)) || null;
+    }
+  }
+
+  function reserveProjectIds(project, allocator) {
+    const stack = [project];
+    while (stack.length) {
+      const value = stack.pop();
+      if (typeof value === 'string') {
+        if (value.length === ID_LEN && [...value].every(char => ID_CHARS.includes(char))) {
+          allocator.reserve(value);
+          continue;
+        }
+        const trimmed = value.trimStart();
+        if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+          try {
+            stack.push(JSON.parse(value));
+          } catch (_) {
+            // 일반 사용자 문자열은 그대로 둔다.
+          }
+        }
+      } else if (Array.isArray(value)) {
+        for (const item of value) stack.push(item);
+      } else if (value && typeof value === 'object') {
+        for (const item of Object.values(value)) stack.push(item);
+      }
     }
   }
 
@@ -352,6 +414,8 @@ const MergeCore = (() => {
     if (!project || typeof project !== 'object' || Array.isArray(project)) {
       throw new MergeError('project.json 형식이 올바르지 않습니다.');
     }
+    // 단독 호출자도 현재 입력의 기존·끊어진 ID와 새 ID가 겹치지 않게 한다.
+    reserveProjectIds(project, allocator);
     // 파일마다 독립 namespace. 같은 옛 ID라도 파일별로 다른 새 ID를 받는다.
     allocator.beginFile();
     collectAndRemapDeclarations(project, allocator);
@@ -623,8 +687,11 @@ const MergeCore = (() => {
         if (!sprite || typeof sprite !== 'object') continue;
         for (const group of ['pictures', 'sounds']) {
           for (const item of sprite[group] || []) {
-            if (item && typeof item === 'object' && mapping.has(item.fileurl)) {
-              item.fileurl = mapping.get(item.fileurl);
+            if (!item || typeof item !== 'object') continue;
+            for (const field of ['fileurl', 'thumbUrl']) {
+              if (mapping.has(item[field])) {
+                item[field] = mapping.get(item[field]);
+              }
             }
           }
         }
@@ -665,14 +732,14 @@ const MergeCore = (() => {
     return declared;
   }
 
-  function validateScriptRefs(script, declared, label) {
-    const problems = [];
-    if (typeof script !== 'string' || !script.trim()) return problems;
+  function collectScriptRefIssues(script, declared, label) {
+    const issues = [];
+    if (typeof script !== 'string' || !script.trim()) return issues;
     let tree;
     try {
       tree = JSON.parse(script);
     } catch (_) {
-      return problems;
+      return issues;
     }
 
     const visit = (node) => {
@@ -685,7 +752,10 @@ const MergeCore = (() => {
       if (typeof blockType === 'string' && blockType.startsWith('func_')) {
         const fid = blockType.slice('func_'.length);
         if (fid && !declared[NS.FUNCTION].has(fid)) {
-          problems.push(`${label}: 없는 함수를 호출합니다(func_${fid}).`);
+          issues.push({
+            key: JSON.stringify([NS.FUNCTION, 'func_call', fid]),
+            message: `${label}: 없는 함수를 호출합니다(func_${fid}).`,
+          });
         }
       }
       const params = node.params;
@@ -695,8 +765,11 @@ const MergeCore = (() => {
           if (typeof param === 'string') {
             const ns = refNamespace(blockType, i);
             if (ns && param && !SENTINEL_VALUES.has(param) && !declared[ns].has(param)) {
-              problems.push(
-                `${label}: ${ns} 참조가 끊어졌습니다(${blockType} p${i} = ${param}).`);
+              issues.push({
+                key: JSON.stringify([ns, blockType, i, param]),
+                message:
+                  `${label}: ${ns} 참조가 끊어졌습니다(${blockType} p${i} = ${param}).`,
+              });
             }
           } else {
             visit(param);
@@ -707,30 +780,44 @@ const MergeCore = (() => {
     };
 
     visit(tree);
-    return problems;
+    return issues;
+  }
+
+  function validateScriptRefs(script, declared, label) {
+    return collectScriptRefIssues(script, declared, label).map(issue => issue.message);
   }
 
   /**
-   * 한 프로젝트의 끊어진 참조 개수. 입력이 이미 망가진 경우를 병합 실패로
-   * 리하지 않기 위한 기준선으로 쓴다.
+   * 한 프로젝트의 끊어진 참조 서명을 다중집합으로 수집한다.
    */
-  function countBrokenRefs(project) {
+  function collectBrokenRefs(project) {
     const declared = collectDeclared(project);
-    let total = 0;
+    const broken = new Map();
+    const addIssues = (issues) => {
+      for (const issue of issues) {
+        broken.set(issue.key, (broken.get(issue.key) || 0) + 1);
+      }
+    };
     for (const obj of project.objects || []) {
-      if (obj) total += validateScriptRefs(obj.script, declared, '').length;
+      if (obj) addIssues(collectScriptRefIssues(obj.script, declared, ''));
     }
     for (const func of project.functions || []) {
       if (func && typeof func.content === 'string') {
-        total += validateScriptRefs(func.content, declared, '').length;
+        addIssues(collectScriptRefIssues(func.content, declared, ''));
       }
     }
+    return broken;
+  }
+
+  function countBrokenRefs(project) {
+    let total = 0;
+    for (const count of collectBrokenRefs(project).values()) total += count;
     return total;
   }
 
   /**
    * 중복 ID / 끊어진 참조 / 타입 오류를 검사한다.
-   * @param {number} baselineBrokenRefs 입력이 이미 갖고 있던 끊어진 참조 수.
+   * @param {Map|number} baselineBrokenRefs 권장은 collectBrokenRefs()의 Map.
    */
   function validateMerged(merged, resourcePaths, baselineBrokenRefs = 0) {
     const problems = [];
@@ -805,8 +892,8 @@ const MergeCore = (() => {
         problems.push(
           `오브젝트 '${obj.name || '?'}'의 scene 참조가 끊어졌습니다: ${obj.scene}`);
       }
-      brokenRefs.push(
-        ...validateScriptRefs(obj.script, declared, `오브젝트 '${obj.name || '?'}'`));
+      brokenRefs.push(...collectScriptRefIssues(
+        obj.script, declared, `오브젝트 '${obj.name || '?'}'`));
     }
 
     for (const variable of merged.variables || []) {
@@ -819,13 +906,29 @@ const MergeCore = (() => {
 
     for (const func of merged.functions || []) {
       if (func && typeof func.content === 'string') {
-        brokenRefs.push(...validateScriptRefs(func.content, declared, '함수'));
+        brokenRefs.push(...collectScriptRefIssues(func.content, declared, '함수'));
       }
     }
 
     // 입력이 이미 갖고 있던 끊어진 참조는 병합 실패로 보지 않는다.
-    if (brokenRefs.length > baselineBrokenRefs) {
-      problems.push(...brokenRefs.slice(0, brokenRefs.length - baselineBrokenRefs));
+    // 참조 서명별 다중집합 차이로 병합이 새로 만든 것만 보고한다.
+    if (baselineBrokenRefs instanceof Map) {
+      const remainingBaseline = new Map(baselineBrokenRefs);
+      for (const issue of brokenRefs) {
+        const remaining = remainingBaseline.get(issue.key) || 0;
+        if (remaining > 0) {
+          remainingBaseline.set(issue.key, remaining - 1);
+        } else {
+          problems.push(issue.message);
+        }
+      }
+    } else {
+      // 구형 정수 호출자 호환. 정확한 비교는 Map 경로에서만 보장한다.
+      const baselineCount = Math.max(0, Number(baselineBrokenRefs) || 0);
+      const newCount = Math.max(0, brokenRefs.length - baselineCount);
+      if (newCount) {
+        problems.push(...brokenRefs.slice(-newCount).map(issue => issue.message));
+      }
     }
 
     if (resourcePaths) {
@@ -836,13 +939,17 @@ const MergeCore = (() => {
         for (const group of ['pictures', 'sounds']) {
           for (const item of sprite[group] || []) {
             if (!item || typeof item !== 'object') continue;
-            const url = item.fileurl;
-            if (typeof url !== 'string' || !url) continue;
-            // 아카이브에 동봉되는 리소스만 검사한다.
-            // '/images/...'(사이트 정적 자산), './bower_components/...'
-            // (EntryJS 기본 미디어), 절대 URL은 아카이브 항목이 아니다.
-            if (!url.startsWith('temp/')) continue;
-            if (!available.has(url)) problems.push(`리소스 누락: ${url}`);
+            for (const field of ['fileurl', 'thumbUrl']) {
+              const url = item[field];
+              if (typeof url !== 'string' || !url) continue;
+              // 아카이브에 동봉되는 리소스만 검사한다.
+              // '/images/...'(사이트 정적 자산), './bower_components/...'
+              // (EntryJS 기본 미디어), 절대 URL은 아카이브 항목이 아니다.
+              if (!url.startsWith('temp/')) continue;
+              if (!available.has(url)) {
+                problems.push(`리소스 누락(${field}): ${url}`);
+              }
+            }
           }
         }
       }
@@ -855,6 +962,7 @@ const MergeCore = (() => {
     NS,
     MergeError,
     IdAllocator,
+    reserveProjectIds,
     prepareProject,
     mergeProjects,
     unifySpecialVariables,
@@ -864,6 +972,7 @@ const MergeCore = (() => {
     resolveResources,
     applyResourceRenames,
     validateMerged,
+    collectBrokenRefs,
     countBrokenRefs,
     // 테스트용 내부 노출
     _internal: {

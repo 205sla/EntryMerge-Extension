@@ -6,7 +6,7 @@ global.Tar = require('../js/tar.js');
 const MergeEngine = require('../js/merge-engine.js');
 
 const encoder = new TextEncoder();
-const { parseEntFile } = MergeEngine._internal;
+const { parseEntFile, inflateGzipBounded } = MergeEngine._internal;
 
 function toArrayBuffer(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -49,6 +49,15 @@ test('zlib streams are rejected even if pako could inflate them', () => {
   assert.throws(
     () => parseEntFile('zlib.ent', toArrayBuffer(zlib)),
     /GZIP TAR/
+  );
+});
+
+test('gzip inflation stops when the output limit is exceeded', () => {
+  const compressed = global.pako.gzip(new Uint8Array(2000));
+
+  assert.throws(
+    () => inflateGzipBounded(compressed, 1000),
+    /허용 한도/
   );
 });
 

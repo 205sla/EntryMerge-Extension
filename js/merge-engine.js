@@ -16,6 +16,8 @@ const MergeEngine = (() => {
   const MAX_COMPRESSED_TOTAL_SIZE = 150 * MIB;
   const MAX_MEMBERS = 5000;
   const MAX_EXPANDED_FILE_SIZE = 250 * MIB;
+  // 실제 파일 합계 외에 멤버별 header/padding과 종료 블록 여유를 포함한다.
+  const MAX_TAR_STREAM_SIZE = MAX_EXPANDED_FILE_SIZE + (MAX_MEMBERS * 1024) + 1024;
   const MAX_EXPANDED_TOTAL_SIZE = 500 * MIB;
   const MAX_MEMBER_SIZE = 100 * MIB;
   const MAX_PROJECT_SIZE = 50 * MIB;
@@ -39,6 +41,43 @@ const MergeEngine = (() => {
     return parts.join('/');
   }
 
+  function inflateGzipBounded(compressed, maxOutputSize = MAX_TAR_STREAM_SIZE) {
+    const chunks = [];
+    let total = 0;
+    let limitExceeded = false;
+    const inflator = new pako.Inflate({ chunkSize: 64 * 1024 });
+
+    inflator.onData = (chunk) => {
+      total += chunk.length;
+      if (total > maxOutputSize) {
+        limitExceeded = true;
+        throw new Error('압축 해제 크기가 허용 한도를 초과합니다.');
+      }
+      chunks.push(chunk);
+    };
+
+    try {
+      inflator.push(compressed, true);
+    } catch (error) {
+      if (limitExceeded) {
+        throw new Error('압축 해제 크기가 허용 한도를 초과합니다.');
+      }
+      throw error;
+    }
+    if (limitExceeded) {
+      throw new Error('압축 해제 크기가 허용 한도를 초과합니다.');
+    }
+    if (inflator.err) throw new Error(inflator.msg || 'GZIP 해제 실패');
+
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return output;
+  }
+
   function parseEntFile(fileName, arrayBuffer) {
     const compressed = new Uint8Array(arrayBuffer);
     if (compressed.length < 2 || compressed[0] !== 0x1f || compressed[1] !== 0x8b) {
@@ -47,8 +86,11 @@ const MergeEngine = (() => {
 
     let tarData;
     try {
-      tarData = pako.inflate(compressed);
-    } catch (_) {
+      tarData = inflateGzipBounded(compressed);
+    } catch (error) {
+      if (error && String(error.message).includes('허용 한도')) {
+        throw new Error(`'${fileName}'의 압축 해제 크기가 허용 한도를 초과합니다.`);
+      }
       throw new Error(`'${fileName}'은(는) 유효한 .ent 파일이 아닙니다. (GZIP 해제 실패)`);
     }
 
@@ -286,7 +328,12 @@ const MergeEngine = (() => {
 
   return {
     performMerge,
-    _internal: { parseEntFile, buildOutputTar, normalizeMemberPath },
+    _internal: {
+      parseEntFile,
+      buildOutputTar,
+      normalizeMemberPath,
+      inflateGzipBounded,
+    },
   };
 })();
 

@@ -2,6 +2,9 @@
 
 엔트리(Entry) 작품 파일(`.ent`)을 합쳐주는 크롬 확장프로그램입니다. 서버를 거치지 않고 브라우저에서 바로 처리해 안전합니다.
 
+웹 버전과 병합 계약을 공유하지만 실행 경로는 독립적입니다. 확장판은 브라우저 로컬에서
+처리하고, 웹 버전 `entry.205.kr`은 2026-08-16부터 Oracle Cloud VM에서 운영합니다.
+
 ## 설치
 - **Chrome Web Store**: https://chromewebstore.google.com/detail/entrymerge-%EC%97%94%ED%8A%B8%EB%A6%AC-%EC%9E%91%ED%92%88-%ED%95%A9%EC%B9%98%EA%B8%B0/afkojcdofphbphfalnjgidbefbmndgjm
 
@@ -43,6 +46,9 @@ node --test
 
 현재 표·checker 블록 참조, 참조 기준선, 리소스 `thumbUrl`, ID 발급 상한과
 Gzip/TAR 경로·항목 안전 정책을 검사한다.
+
+병합 계약 하드닝 변경은 `codex/merge-contract-hardening` 브랜치와
+[GitHub PR #1](https://github.com/205sla/EntryMerge-Extension/pull/1)에서 검토한다.
 
 ## 관련 링크
 - 웹 버전: https://entry.205.kr

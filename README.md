@@ -2,6 +2,9 @@
 
 엔트리(Entry) 작품 파일(`.ent`)을 합쳐주는 크롬 확장프로그램입니다. 서버를 거치지 않고 브라우저에서 바로 처리해 안전합니다.
 
+웹 버전과 병합 계약을 공유하지만 실행 경로는 독립적입니다. 확장판은 브라우저 로컬에서
+처리하고, 웹 버전 `entry.205.kr`은 2026-08-16부터 Oracle Cloud VM에서 운영합니다.
+
 ## 설치
 - **Chrome Web Store**: https://chromewebstore.google.com/detail/entrymerge-%EC%97%94%ED%8A%B8%EB%A6%AC-%EC%9E%91%ED%92%88-%ED%95%A9%EC%B9%98%EA%B8%B0/afkojcdofphbphfalnjgidbefbmndgjm
 
@@ -10,6 +13,7 @@
 - 장면·오브젝트·변수·리스트·신호·함수·표의 ID를 namespace별로 재발급해 충돌 방지
 - 블록 AST를 순회해 참조를 정확히 갱신(무차별 문자열 치환 없음)
 - 출력 검증에 실패하면 병합을 중단(깨진 작품을 내보내지 않음)
+- AI 학습 모델은 파일 순서와 무관하게 보존하고, 서로 다른 모델이 둘 이상이면 병합 중단
 - 드래그 앤 드롭 파일 선택
 - 리메이크 출처를 기존 기본 작품, 숨기기, 합친 작품 중 하나로 선택
 - 대답·초시계 변수 숨기기 옵션
@@ -34,6 +38,18 @@
 
 ## 제한
 - 파일당 최대 50MB / 전체 150MB / 최대 10개
+
+## 회귀 테스트
+
+```bash
+node --test
+```
+
+현재 25개 테스트가 표·checker 블록 참조, 참조 기준선, 리소스 `thumbUrl`, ID 발급 상한,
+AI 학습 모델 정책과 Gzip/TAR 경로·항목 안전 정책을 검사한다.
+
+병합 계약 하드닝 변경은 `codex/merge-contract-hardening` 브랜치와
+[GitHub PR #1](https://github.com/205sla/EntryMerge-Extension/pull/1)에서 검토한다.
 
 ## 관련 링크
 - 웹 버전: https://entry.205.kr

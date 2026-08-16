@@ -9,6 +9,18 @@ const MergeEngine = (() => {
 
   const textDecoder = new TextDecoder();
   const textEncoder = new TextEncoder();
+  const MIB = 1024 * 1024;
+  const CANONICAL_PROJECT_PATH = 'temp/project.json';
+  const MAX_FILE_COUNT = 10;
+  const MAX_COMPRESSED_FILE_SIZE = 50 * MIB;
+  const MAX_COMPRESSED_TOTAL_SIZE = 150 * MIB;
+  const MAX_MEMBERS = 5000;
+  const MAX_EXPANDED_FILE_SIZE = 250 * MIB;
+  // 실제 파일 합계 외에 멤버별 header/padding과 종료 블록 여유를 포함한다.
+  const MAX_TAR_STREAM_SIZE = MAX_EXPANDED_FILE_SIZE + (MAX_MEMBERS * 1024) + 1024;
+  const MAX_EXPANDED_TOTAL_SIZE = 500 * MIB;
+  const MAX_MEMBER_SIZE = 100 * MIB;
+  const MAX_PROJECT_SIZE = 50 * MIB;
 
   // 브라우저 렌더 루프에 제어권을 넘긴다(무거운 동기 작업 사이의 프리즈 방지).
   function yieldToUI() {
@@ -17,51 +29,168 @@ const MergeEngine = (() => {
 
   // --- .ent 해체 ----------------------------------------------------------
 
-  function isSafeMemberPath(name) {
+  function normalizeMemberPath(name) {
+    if (typeof name !== 'string' || !name || name.includes('\0')) return null;
     const normalized = String(name).replace(/\\/g, '/');
-    if (normalized.startsWith('/')) return false;
+    if (normalized.startsWith('/')) return null;
     const parts = normalized.split('/').filter(p => p && p !== '.');
-    if (!parts.length) return false;
-    if (parts.some(p => p === '..')) return false;
+    if (!parts.length) return null;
+    if (parts.some(p => p === '..')) return null;
     // 드라이브 문자(C:) 같은 절대 경로 표기도 거부한다.
-    return !parts[0].includes(':');
+    if (parts[0].includes(':')) return null;
+    return parts.join('/');
+  }
+
+  function inflateGzipBounded(compressed, maxOutputSize = MAX_TAR_STREAM_SIZE) {
+    const chunks = [];
+    let total = 0;
+    let limitExceeded = false;
+    const inflator = new pako.Inflate({ chunkSize: 64 * 1024 });
+
+    inflator.onData = (chunk) => {
+      total += chunk.length;
+      if (total > maxOutputSize) {
+        limitExceeded = true;
+        throw new Error('압축 해제 크기가 허용 한도를 초과합니다.');
+      }
+      chunks.push(chunk);
+    };
+
+    try {
+      inflator.push(compressed, true);
+    } catch (error) {
+      if (limitExceeded) {
+        throw new Error('압축 해제 크기가 허용 한도를 초과합니다.');
+      }
+      throw error;
+    }
+    if (limitExceeded) {
+      throw new Error('압축 해제 크기가 허용 한도를 초과합니다.');
+    }
+    if (inflator.err) throw new Error(inflator.msg || 'GZIP 해제 실패');
+
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return output;
   }
 
   function parseEntFile(fileName, arrayBuffer) {
+    const compressed = new Uint8Array(arrayBuffer);
+    if (compressed.length < 2 || compressed[0] !== 0x1f || compressed[1] !== 0x8b) {
+      throw new Error(`'${fileName}'은(는) 지원되는 GZIP TAR .ent 파일이 아닙니다.`);
+    }
+
     let tarData;
     try {
-      tarData = pako.inflate(new Uint8Array(arrayBuffer));
-    } catch (_) {
+      tarData = inflateGzipBounded(compressed);
+    } catch (error) {
+      if (error && String(error.message).includes('허용 한도')) {
+        throw new Error(`'${fileName}'의 압축 해제 크기가 허용 한도를 초과합니다.`);
+      }
       throw new Error(`'${fileName}'은(는) 유효한 .ent 파일이 아닙니다. (GZIP 해제 실패)`);
     }
 
-    const entries = Tar.parse(tarData);
+    let entries;
+    try {
+      entries = Tar.parse(tarData);
+    } catch (_) {
+      throw new Error(`'${fileName}'은(는) 유효한 GZIP TAR 파일이 아닙니다.`);
+    }
+    if (entries.length > MAX_MEMBERS) {
+      throw new Error(`'${fileName}'의 아카이브 항목 수가 허용 한도를 초과합니다.`);
+    }
+
     let projectData = null;
     const resources = [];
+    const seenPaths = new Set();
+    const filePaths = new Set();
+    const requiredDirectories = new Set();
+    let expandedSize = 0;
 
     for (const entry of entries) {
-      if (entry.type === '5' || entry.name.endsWith('/')) continue;
-      if (!isSafeMemberPath(entry.name)) continue;
+      const path = normalizeMemberPath(entry.rawName === undefined ? entry.name : entry.rawName);
+      if (!path) {
+        throw new Error(`'${fileName}'의 아카이브에 안전하지 않은 경로가 있습니다.`);
+      }
+      if (seenPaths.has(path)) {
+        throw new Error(`'${fileName}'의 아카이브에 중복 경로가 있습니다.`);
+      }
 
-      const basename = entry.name.split('/').pop();
-      if (basename === 'project.json') {
+      const parts = path.split('/');
+      const parents = [];
+      for (let i = 1; i < parts.length; i++) parents.push(parts.slice(0, i).join('/'));
+      if (parents.some(parent => filePaths.has(parent))) {
+        throw new Error(`'${fileName}'의 파일·디렉터리 경로가 충돌합니다.`);
+      }
+
+      const isDirectory = entry.type === '5';
+      const isRegularFile = entry.type === '0' || entry.type === '\0' || entry.type === '';
+      if (isDirectory) {
+        if (entry.data.length !== 0) {
+          throw new Error(`'${fileName}'의 디렉터리 항목 크기가 올바르지 않습니다.`);
+        }
+        if (path === CANONICAL_PROJECT_PATH || path.endsWith('/project.json')) {
+          throw new Error(`'${fileName}'의 project.json은 일반 파일이어야 합니다.`);
+        }
+        seenPaths.add(path);
+        for (const parent of parents) requiredDirectories.add(parent);
+        requiredDirectories.add(path);
+        continue;
+      }
+      if (!isRegularFile) {
+        throw new Error(`'${fileName}'의 아카이브에 허용되지 않는 특수 항목이 있습니다.`);
+      }
+      if (requiredDirectories.has(path)) {
+        throw new Error(`'${fileName}'의 파일·디렉터리 경로가 충돌합니다.`);
+      }
+
+      seenPaths.add(path);
+      filePaths.add(path);
+      for (const parent of parents) requiredDirectories.add(parent);
+
+      if (entry.data.length > MAX_MEMBER_SIZE) {
+        throw new Error(`'${fileName}'의 개별 파일이 허용 크기를 초과합니다.`);
+      }
+      expandedSize += entry.data.length;
+      if (expandedSize > MAX_EXPANDED_FILE_SIZE) {
+        throw new Error(`'${fileName}'의 압축 해제 크기가 허용 한도를 초과합니다.`);
+      }
+
+      const basename = path.split('/').pop();
+      if (basename === 'project.json' && (
+        path !== CANONICAL_PROJECT_PATH || entry.rawName !== CANONICAL_PROJECT_PATH
+      )) {
+        throw new Error(`'${fileName}'의 project.json은 temp/project.json 경로에 하나만 있어야 합니다.`);
+      }
+      if (path === CANONICAL_PROJECT_PATH) {
+        if (projectData !== null) {
+          throw new Error(`'${fileName}'의 project.json이 중복되어 있습니다.`);
+        }
+        if (entry.data.length > MAX_PROJECT_SIZE) {
+          throw new Error(`'${fileName}'의 project.json이 허용 크기를 초과합니다.`);
+        }
         try {
           projectData = JSON.parse(textDecoder.decode(entry.data));
         } catch (_) {
           throw new Error(`'${fileName}'의 project.json 파싱에 실패했습니다.`);
         }
+        if (!projectData || Array.isArray(projectData) || typeof projectData !== 'object') {
+          throw new Error(`'${fileName}'의 project.json 최상위 값은 객체여야 합니다.`);
+        }
         continue;
       }
-      if (entry.data.length > 0) {
-        resources.push({ name: entry.name, data: entry.data });
-      }
+      resources.push({ name: path, data: entry.data });
     }
 
-    if (!projectData) {
-      throw new Error(`'${fileName}'에서 project.json을 찾을 수 없습니다.`);
+    if (projectData === null) {
+      throw new Error(`'${fileName}'에서 temp/project.json을 찾을 수 없습니다.`);
     }
 
-    return { projectData, resources };
+    return { projectData, resources, expandedSize };
   }
 
   // --- .ent 조립 ----------------------------------------------------------
@@ -92,15 +221,27 @@ const MergeEngine = (() => {
     if (!files || files.length < 2) {
       throw new Error('최소 2개 이상의 .ent 파일이 필요합니다.');
     }
+    if (files.length > MAX_FILE_COUNT) {
+      throw new Error(`파일은 최대 ${MAX_FILE_COUNT}개까지 합칠 수 있습니다.`);
+    }
 
     const allocator = new MergeCore.IdAllocator();
     const projects = [];
     const remakeMetadata = [];
     const filesResources = [];
-    let baselineBroken = 0;
+    const baselineBroken = new Map();
+    let compressedTotal = 0;
+    let expandedTotal = 0;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+      if (file.size > MAX_COMPRESSED_FILE_SIZE) {
+        throw new Error(`'${file.name}'의 크기가 50MB 제한을 초과합니다.`);
+      }
+      compressedTotal += file.size;
+      if (compressedTotal > MAX_COMPRESSED_TOTAL_SIZE) {
+        throw new Error('선택한 파일의 전체 크기가 150MB 제한을 초과합니다.');
+      }
       report(
         Math.round((i / files.length) * 70),
         `처리 중: ${file.name} (${i + 1}/${files.length})`
@@ -109,19 +250,31 @@ const MergeEngine = (() => {
       const arrayBuffer = await file.arrayBuffer();
       await yieldToUI();
 
-      const { projectData, resources } = parseEntFile(file.name, arrayBuffer);
+      const { projectData, resources, expandedSize } = parseEntFile(file.name, arrayBuffer);
+      expandedTotal += expandedSize;
+      if (expandedTotal > MAX_EXPANDED_TOTAL_SIZE) {
+        throw new Error('압축 해제한 파일의 전체 크기가 허용 한도를 초과합니다.');
+      }
 
-      // 입력이 이미 갖고 있던 끊어진 참조 수를 기록한다(검증 기준선).
-      baselineBroken += MergeCore.countBrokenRefs(projectData);
+      // 입력이 이미 갖고 있던 끊어진 참조 서명을 기록한다(검증 기준선).
+      for (const [key, count] of MergeCore.collectBrokenRefs(projectData)) {
+        baselineBroken.set(key, (baselineBroken.get(key) || 0) + count);
+      }
 
       // ID 재발급 전에 선택 가능한 원본 작품의 출처 메타데이터를 보관한다.
       remakeMetadata.push(MergeCore.extractRemakeMetadata(projectData));
 
-      // 파일마다 독립적인 ID namespace로 전 식별자를 재발급한다.
-      projects.push(MergeCore.prepareProject(projectData, allocator));
+      projects.push(projectData);
       filesResources.push(resources);
 
       await yieldToUI();
+    }
+
+    // 앞 파일에서 만든 새 ID가 뒤 파일의 기존·끊어진 ID와 겹치지 않도록
+    // 전체 입력을 먼저 예약한 뒤 두 번째 단계에서 프로젝트를 변형한다.
+    for (const project of projects) MergeCore.reserveProjectIds(project, allocator);
+    for (let i = 0; i < projects.length; i++) {
+      projects[i] = MergeCore.prepareProject(projects[i], allocator);
     }
 
     report(75, '리소스 정리 중...');
@@ -173,7 +326,15 @@ const MergeEngine = (() => {
     return new Blob([gzBytes], { type: 'application/gzip' });
   }
 
-  return { performMerge };
+  return {
+    performMerge,
+    _internal: {
+      parseEntFile,
+      buildOutputTar,
+      normalizeMemberPath,
+      inflateGzipBounded,
+    },
+  };
 })();
 
 if (typeof module !== 'undefined' && module.exports) {

@@ -16,7 +16,7 @@ const Tar = (() => {
   /**
    * Parse a TAR archive from a Uint8Array.
    * @param {Uint8Array} buffer - Raw TAR data (already decompressed).
-   * @returns {Array<{name: string, data: Uint8Array, type: string}>}
+   * @returns {Array<{name: string, rawName: string, data: Uint8Array, type: string}>}
    */
   function parse(buffer) {
     if (!buffer || buffer.length < BLOCK) return [];
@@ -33,14 +33,21 @@ const Tar = (() => {
     while (offset + BLOCK <= buffer.length) {
       const header = buffer.subarray(offset, offset + BLOCK);
       if (isZeroBlock(header)) break;
+      if (!hasValidChecksum(header)) {
+        throw new Error('TAR 헤더 체크섬이 올바르지 않습니다.');
+      }
 
       const typeFlag = String.fromCharCode(header[156]);
       const size = readOctal(header, 124, 12);
       const dataBlocks = Math.ceil(size / BLOCK) * BLOCK;
 
       offset += BLOCK;
-      const dataEnd = Math.min(offset + size, buffer.length);
-      const rawData = size > 0 ? buffer.subarray(offset, dataEnd) : new Uint8Array(0);
+      if (offset + size > buffer.length || offset + dataBlocks > buffer.length) {
+        throw new Error('TAR 항목 데이터가 잘렸습니다.');
+      }
+      const rawData = size > 0
+        ? buffer.subarray(offset, offset + size)
+        : new Uint8Array(0);
 
       // --- 확장 헤더: 데이터가 메타데이터다. 항목으로 내보내지 않는다. ---
       if (typeFlag === 'x' || typeFlag === 'X') {
@@ -82,28 +89,19 @@ const Tar = (() => {
         }
         if (!fullName && globalName) fullName = globalName;
       }
+      const rawName = fullName;
       fullName = normalizePath(fullName);
       pendingName = null;
       pendingLinkName = null;
 
-      // 심볼릭/하드 링크는 버린다(아카이브 밖을 가리킬 수 있다).
-      if (typeFlag === '1' || typeFlag === '2') {
-        offset += dataBlocks;
-        continue;
-      }
-
-      if (size > 0) {
-        if (offset + size <= buffer.length) {
-          entries.push({
-            name: fullName,
-            data: buffer.slice(offset, offset + size),
-            type: typeFlag,
-          });
-        }
-        // 데이터가 잘린 항목은 조용히 빈 파일로 만들지 않고 건너뛴다.
-      } else {
-        entries.push({ name: fullName, data: new Uint8Array(0), type: typeFlag });
-      }
+      // 링크·장치 같은 특수 항목도 호출자에게 전달해 안전 정책에서 명시적으로
+      // 거부하게 한다. 조용히 버리면 악성/손상 아카이브가 정상처럼 보일 수 있다.
+      entries.push({
+        name: fullName,
+        rawName,
+        data: buffer.slice(offset, offset + size),
+        type: typeFlag,
+      });
 
       offset += dataBlocks;
     }
@@ -210,6 +208,18 @@ const Tar = (() => {
       if (block[i] !== 0) return false;
     }
     return true;
+  }
+
+  function hasValidChecksum(header) {
+    const expected = readOctal(header, 148, 8);
+    let unsignedSum = 0;
+    let signedSum = 0;
+    for (let i = 0; i < BLOCK; i++) {
+      const byte = i >= 148 && i < 156 ? 32 : header[i];
+      unsignedSum += byte;
+      signedSum += byte > 127 ? byte - 256 : byte;
+    }
+    return expected === unsignedSum || expected === signedSum;
   }
 
   function readStr(buf, off, len) {

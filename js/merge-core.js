@@ -127,8 +127,9 @@ const MergeCore = (() => {
   // speed가 배열이 되면 Entry.FPS가 배열이 되어 1000/[60,60] = NaN 으로 틱이 붕괴한다.
   const SCALAR_FIELDS = [
     'speed', 'isPracticalCourse', 'name', 'parent', 'origin', 'user',
-    'projectId', 'learning',
+    'projectId',
   ];
+  const SINGLETON_MODEL_FIELD = 'learning';
   const SCALAR_INTERFACE_FIELDS = ['canvasWidth', 'menuWidth', 'object'];
 
   // 파일별로 concat 하는 배열 필드. 값이 같아도 dedup 하지 않는다
@@ -425,6 +426,18 @@ const MergeCore = (() => {
 
   // --- 스키마 기반 병합 ---------------------------------------------------
 
+  function canonicalJson(value) {
+    if (Array.isArray(value)) {
+      return '[' + value.map(canonicalJson).join(',') + ']';
+    }
+    if (value && typeof value === 'object') {
+      return '{' + Object.keys(value).sort().map(
+        key => JSON.stringify(key) + ':' + canonicalJson(value[key]),
+      ).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
   function mergeProjects(projects) {
     if (!projects || !projects.length) {
       throw new MergeError('병합할 프로젝트가 없습니다.');
@@ -436,6 +449,28 @@ const MergeCore = (() => {
     // 스칼라 필드는 첫 파일 값을 채택한다(배열화 금지).
     for (const field of SCALAR_FIELDS) {
       if (field in base) merged[field] = base[field];
+    }
+
+    // Entry는 작품당 AI 학습 모델 하나만 지원한다. 한 작품에만 있으면 파일 순서와 무관하게
+    // 보존하고, 서로 다른 모델이 둘 이상이면 조용히 버리지 않고 병합을 중단한다.
+    const learningModels = projects
+      .filter(project => project[SINGLETON_MODEL_FIELD] !== null &&
+        project[SINGLETON_MODEL_FIELD] !== undefined)
+      .map(project => project[SINGLETON_MODEL_FIELD]);
+    if (learningModels.length) {
+      const firstModel = learningModels[0];
+      const firstKey = canonicalJson(firstModel);
+      if (learningModels.slice(1).some(model => canonicalJson(model) !== firstKey)) {
+        throw new MergeError('서로 다른 AI 학습 모델이 포함된 작품은 안전하게 합칠 수 없습니다.');
+      }
+      merged[SINGLETON_MODEL_FIELD] = firstModel;
+    } else {
+      const projectWithLearning = projects.find(
+        project => Object.prototype.hasOwnProperty.call(project, SINGLETON_MODEL_FIELD),
+      );
+      if (projectWithLearning) {
+        merged[SINGLETON_MODEL_FIELD] = projectWithLearning[SINGLETON_MODEL_FIELD];
+      }
     }
 
     if (base.interface && typeof base.interface === 'object') {
@@ -472,7 +507,13 @@ const MergeCore = (() => {
     }
 
     // 알려지지 않은 최상위 필드는 첫 파일 값을 보존한다(스키마 변화 대비).
-    const known = new Set([...SCALAR_FIELDS, ...CONCAT_FIELDS, ...UNION_FIELDS, 'interface']);
+    const known = new Set([
+      ...SCALAR_FIELDS,
+      ...CONCAT_FIELDS,
+      ...UNION_FIELDS,
+      'interface',
+      SINGLETON_MODEL_FIELD,
+    ]);
     for (const project of projects) {
       for (const key of Object.keys(project)) {
         if (!known.has(key) && !(key in merged)) merged[key] = project[key];
